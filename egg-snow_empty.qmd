@@ -1,5 +1,6 @@
 ---
 title: "Data Analaysis with the Arctic shorebird csv files"
+author: "Anna Ramji"
 format: html
 ---
 
@@ -44,8 +45,17 @@ glimpse(nests_data)
 
 Yeah! `Date_found` is already in date format! We can thus directly aggregate the data by months:
 
+(most of the data types seem to be appropriate)
+
+(aggregate by species, site, year, and month)
 
 ```{r}
+nests_month <- nests_data %>% 
+  mutate(month = lubridate::month(Date_found)) %>% 
+  group_by(Species, Site, Year, month) %>% 
+  summarize(n_nest = n())
+
+
 
 ```
 
@@ -62,27 +72,39 @@ glimpse(snowcover_data)
 The Date is stored as a character we thus first we need to transform the date in date format before computing the monthly aggregate:
 
 ```{r}
-snowcover_data_fixed <- 
+snowcover_data_fixed <- snowcover_data %>% 
+#  mutate(Date = lubridate::as_date(Date, format = "%d-%b-%y"))
+  mutate(Date2 = as_date(Date))
 ```
 
 We have 72 errors. Let's have a look at the date which failed:
 
+In general if it fails, it's going to make them NAs, so we can use that to inspect the cases where it failed to hopefully get a more contextual understanding of the problem.
+
 ```{r}
+snowcover_data_fixed %>% 
+  filter(is.na(Date2)) %>% 
+  View()
 
 ```
+
+`Date` column looks like: "8&9 june 06" ...
 
 
 It is because 2 days were entered as one value `8&9 june 06`, it is not in the expected format
 
 ```{r}
+snowcover_data_fixed <- snowcover_data_fixed %>% 
+  mutate(Date = case_when(
+    Date == "8&9 june 06" ~ "09-June-08",
+    .default = Date
+  )) %>% 
+  mutate(Date2 = as_date(Date, format = "%d-%b-%y"))
 
 ```
 
 Mmm the Dates are not what we were expecting... It generally means there are different date types. Let's start by fixing the problematic dates before transforming it to the date format.
 
-```{r}
-
-```
 
 
 ::: {.callout-note}
@@ -94,31 +116,92 @@ You might be wondering why I started with `as_date()` instead of directly using 
 Now let's compute the monthly statistics
 
 ```{r}
+
 # adding the snow days with a threshold at 10%
+# cumulative snow days and mean snow cover 
+# site year month
+
+snow_function <- function(snow_data){
+  snow_stats <- snow_data %>% 
+    mutate(Month = lubridate::month(Date2)) %>% 
+    filter(Snow_cover > 10) %>% 
+    group_by(Site, Year, Month) %>% 
+    summarize(num_snow_days = n(),
+              mean_snow_cover = mean(Snow_cover, na.rm = TRUE))
+  return(snow_stats)
+}
+
+
+# Julien's version (better bc it keeps the <10 days when finding average snow cover)
+j_snowcover_data_fixed <- snowcover_data_fixed %>% 
+  mutate(month = month(Date2)) %>% 
+  mutate(snow_days = ifelse(Snow_cover > 10, 1, 0)) %>% 
+  group_by(Site, Year, month) %>% 
+  summarize(cum_snow_days = sum(snow_days, na.rm = TRUE),
+            avg_snow_cover = mean(Snow_cover, na.rm = TRUE)) # keeps the < 10 days!! (my function did not)
+
+#snow_function(snowcover_data_fixed)
 
 ```
+
+- 
+```{r}
+snowcover_data_fixed2 <- snow_function(snowcover_data_fixed)
+(snowcover_data_fixed2)
+
+
+snowcover_data_fixed <- j_snowcover_data_fixed
+```
+
 
  
 ### Join the snow cover and nest tables
 
 ```{r}
+nests_snow_month <- nests_month %>% 
+  inner_join(snowcover_data_fixed, join_by(Site, month, Year)) # could also have said month == Month if mismatched capitlalization
+# instead of left join, removed NAs and only keeps rows where both datasets have values
 
 ```
+
+"joining is the most expensive thing you can ask in data manipulation. Need to scan the primary keys in both tables, find a match. Can take a long time. Everything you can do to aggregate the data before joining is good. anything you can do to optimize this is ideal"
 
 Well in the end we did not have much information by months (mainly 2 months per year focused on June and July), so let's aggregate by year instead:
 
 ```{r}
+nests_snow_year <- nests_snow_month %>% 
+  group_by(Species, Site, Year) %>% 
+  summarize(cum_snow_days = sum(cum_snow_days, na.rm = TRUE),
+            avg_snow_cover = mean(avg_snow_cover, na.rm = TRUE),
+            n_nest = sum(n_nest, na.rm = TRUE))
 
+
+#View(nests_snow_year)
 ```
 
 ### Plots
 
 ```{r}
+ggplot(data = nests_snow_year,
+       aes(x = cum_snow_days,
+               y = n_nest,
+               color = Species)) +
+  geom_point() +
+  scale_colour_brewer(palette = "Set3") +
+#  geom_line() +
+  theme_bw() #+
+#  facet_wrap(~Species)
 
 ```
 
-```{r}
+seem to be fewer nests w less snow?
 
+```{r}
+species_data <- read_csv(file.path(path_raw, species_csv))
+
+nests_snow_year2 <- nests_snow_year %>% 
+  left_join(species_data, join_by(Species == Code))
+  
 ```
 
 What do you think is the answer to our question? 
@@ -133,7 +216,7 @@ sites_data <- read_csv(file.path(path_raw, sites_csv))
 
 eggs_data <- read_csv(file.path(path_raw, eggs_csv))
 
-species_data <- read_csv(file.path(path_raw, species_csv))
+#species_data <- read_csv(file.path(path_raw, species_csv))
 ```
 
 Let's compute the number of eggs per nest. The column `Egg-num` seems to be a good candidate to estimate the number of eggs per nest:
